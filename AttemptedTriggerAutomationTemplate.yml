@@ -1,0 +1,312 @@
+Parameters:
+  MaxvCpuCount:
+    Type: Number
+    Description: What is the maximum number of simulations you'd like to run in parallel?
+  ProjectName:
+    Type: String
+    Description: >-
+      What prefix would you like all your project resources to have? MUST BE
+      LOWERCASE LETTERS
+Resources:
+  MyVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.1.0.0/16
+      EnableDnsHostnames: 'true'
+      EnableDnsSupport: 'true'
+  MyInternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+  GatewayToInternet:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref MyInternetGateway
+  MyRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref MyVPC
+  MyVPCGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties: 
+      InternetGatewayId: !Ref MyInternetGateway
+      VpcId: !Ref MyVPC
+  MySecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties: 
+      GroupDescription: 'Your CloudFormation security group'
+      GroupName: !Sub '${ProjectName}-security-group'
+      SecurityGroupEgress:
+        - IpProtocol: 'tcp'
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: 'tcp'
+          FromPort: 11010
+          ToPort: 11010
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: 'tcp'
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: 'tcp'
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: 'tcp'
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: 'tcp'
+          FromPort: 11010
+          ToPort: 11010
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: 'tcp'
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: 'tcp'
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: 'tcp'
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref MyVPC
+  MySubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: 10.1.0.0/20
+      MapPublicIpOnLaunch: 'true'
+      VpcId: !Ref MyVPC
+  MySubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: 10.1.16.0/20
+      MapPublicIpOnLaunch: 'true'
+      VpcId: !Ref MyVPC
+  MyRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref MyRouteTable
+      GatewayId: !Ref MyInternetGateway
+      DestinationCidrBlock: 0.0.0.0/0
+  MySubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties: 
+      RouteTableId: !Ref MyRouteTable
+      SubnetId: !Ref MySubnet1
+  MySubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties: 
+      RouteTableId: !Ref MyRouteTable
+      SubnetId: !Ref MySubnet2
+  WebInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0fb653ca2d3203ac1
+      SecurityGroupIds:
+          - !GetAtt "MySecurityGroup.GroupId"
+      SubnetId: !Ref MySubnet1
+  MyBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub '${ProjectName}bucket'
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .txt
+            Function: !GetAtt MyLambdaFunction.Arn
+  MyRepo:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      RepositoryName: !Sub '${ProjectName}repo'
+  MyLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt MyLambdaFunction.Arn
+      Principal: s3.amazonaws.com
+  MyLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Description: 'Lambda role for S3, CloudWatch, and Batch'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+        - 'arn:aws:iam::aws:policy/CloudWatchFullAccess'
+        - 'arn:aws:iam::aws:policy/AWSBatchFullAccess'
+      RoleName: !Sub '${ProjectName}lambdarole'
+  MyEC2Role:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Description: EC2 role for S3 and EC2 container service
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+        - >-
+          arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+      RoleName: !Sub '${ProjectName}ec2role'
+  MyECSProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}ec2profile'
+      Roles:
+        - !Ref MyEC2Role
+  MyEnvironment:
+    Type: 'AWS::Batch::ComputeEnvironment'
+    Properties:
+      ComputeEnvironmentName: !Sub '${ProjectName}env'
+      ComputeResources:
+        InstanceRole: !GetAtt MyECSProfile.Arn
+        InstanceTypes:
+          - optimal
+        MaxvCpus: !Ref MaxvCpuCount
+        MinvCpus: 0
+        SecurityGroupIds:
+          - !GetAtt "MySecurityGroup.GroupId"
+        Subnets:
+          - !Ref MySubnet1
+          - !Ref MySubnet2
+        Type: EC2
+      Type: Managed
+  MyQueue:
+    Type: 'AWS::Batch::JobQueue'
+    Properties:
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref MyEnvironment
+      JobQueueName: !Sub '${ProjectName}Queue'
+      Priority: 1
+  MyJobDef:
+    Type: 'AWS::Batch::JobDefinition'
+    Properties:
+      ContainerProperties:
+        Image: !GetAtt MyRepo.RepositoryUri
+        Memory: 1000
+        Vcpus: 1
+      JobDefinitionName: !Sub '${ProjectName}Def'
+      Type: container
+  MyLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.handler
+      Environment:
+        Variables:
+          USED_JOB_DEF: !Sub '${ProjectName}Def'
+          USED_JOB_NAME: !Sub '${ProjectName}Job'
+          USED_JOB_QUEUE: !Sub '${ProjectName}Queue'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import time
+          def lambda_handler(event, context):
+              ## Get the Bucketname from which lambda was triggered
+              source_bucket_name = event['Records'][0]['s3']['bucket']['name']
+              ## Filename of object which triggered the lambda (with path)
+              file_key_name = event['Records'][0]['s3']['object']['key']
+              ## Get the eventtime when Lambda was triggered
+              eventTime = event['Records'][0]['eventTime']
+              endfolder='Results/'+eventTime
+              
+              ## Delete the file which triggered the lambda
+              s3_client = boto3.client("s3")
+              s3_client.delete_object(Bucket = source_bucket_name, Key = file_key_name)
+              
+              ## create a list of files and copy into a new folder with Date and Time Stamp
+              s3_resource = boto3.resource('s3')
+              bucket = s3_resource.Bucket(source_bucket_name)
+              object_list = []
+              for obj in bucket.objects.filter(Prefix="UserTestRun/"):
+                  object_list.append(obj.key)
+              for TR in object_list:
+                  s3_client = boto3.client("s3")
+                  copy_source_object = {'Bucket': source_bucket_name, 'Key': TR}
+                  s3_client.copy_object(CopySource=copy_source_object, Bucket=source_bucket_name, Key=endfolder+'/'+TR)
+                  s3_client.delete_object(Bucket = source_bucket_name, Key = TR)
+              
+              ## Create Batch array Jobs for all the files in New Folder
+              s3_resource = boto3.resource('s3')
+              bucket = s3_resource.Bucket(source_bucket_name)
+              client = boto3.client('batch')
+              TestrunName = endfolder+'/UserTestRun/'
+              ResultName = endfolder+'/Results/'
+              TestRunURL = 's3://' + source_bucket_name + '/'+TestrunName
+              ResultURL = 's3://' + source_bucket_name + '/'+ResultName
+              folder = []
+              for obj in bucket.objects.filter(Prefix=TestrunName):
+                  folder.append(obj.key)
+              Arraysize=len(folder)
+              ## print(folder)
+              response = client.submit_job(
+                  actual_Def = os.environ['USED_JOB_DEF'],
+                  actual_Queue = os.environ['USED_JOB_QUEUE'],
+                  actual_name = os.environ['USED_JOB_NAME'],
+                  jobDefinition= actual_Def,
+                  jobName= actual_name,
+                  jobQueue= actual_Queue,
+                  arrayProperties={
+                      'size': Arraysize
+                  },
+                  containerOverrides={
+                      ## 'vcpus': 1,
+                      ## 'memory': 1000,
+                      'environment': [
+                          {
+                              'name':'TESTRUN_FILE_S3_URL',
+                              'value':TestRunURL,
+                          },
+                          {
+                              'name':'RESULT_FILE_S3_URL',
+                              'value':ResultURL,
+                          },
+                      ],
+                  },
+              )
+      FunctionName: !Sub '${ProjectName}-lambdafunction'
+      Runtime: python3.8
+      Timeout: 360
+      Role: !GetAtt MyLambdaRole.Arn
+  MyLambdaVersion:
+    Type: 'AWS::Lambda::Version'
+    Properties:
+      FunctionName: !Ref MyLambdaFunction
+  MyLambdaConfig:
+    Type: 'AWS::Lambda::EventInvokeConfig'
+    Properties:
+      FunctionName: !Ref MyLambdaFunction
+      MaximumRetryAttempts: 0
+      Qualifier: !GetAtt MyLambdaVersion.Version
+
