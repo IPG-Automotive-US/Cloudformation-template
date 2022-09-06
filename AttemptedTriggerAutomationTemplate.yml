@@ -7,6 +7,9 @@ Parameters:
     Description: >-
       What prefix would you like all your project resources to have? MUST BE
       LOWERCASE LETTERS
+  S3BucketName:
+    Type: String
+    Default: cloudcreatedbukcet
 Resources:
   MyVPC:
     Type: 'AWS::EC2::VPC'
@@ -118,10 +121,15 @@ Resources:
       SecurityGroupIds:
           - !GetAtt "MySecurityGroup.GroupId"
       SubnetId: !Ref MySubnet1
+      Tags:
+        - 
+          Key: Name
+          Value: ipglockinstance
   MyBucket:
     Type: 'AWS::S3::Bucket'
+    DependsOn: LambdaInvokePermission
     Properties:
-      BucketName: !Sub '${ProjectName}bucket'
+      BucketName: !Ref S3BucketName
       NotificationConfiguration:
         LambdaConfigurations:
           - Event: 's3:ObjectCreated:*'
@@ -135,12 +143,7 @@ Resources:
     Type: 'AWS::ECR::Repository'
     Properties:
       RepositoryName: !Sub '${ProjectName}repo'
-  MyLambdaPermission:
-    Type: 'AWS::Lambda::Permission'
-    Properties:
-      Action: 'lambda:InvokeFunction'
-      FunctionName: !GetAtt MyLambdaFunction.Arn
-      Principal: s3.amazonaws.com
+
   MyLambdaRole:
     Type: 'AWS::IAM::Role'
     Properties:
@@ -174,8 +177,10 @@ Resources:
       Description: EC2 role for S3 and EC2 container service
       ManagedPolicyArns:
         - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
-        - >-
-          arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - 'arn:aws:iam::aws:policy/AmazonEC2FullAccess'
+        - 'arn:aws:iam::aws:policy/AWSBatchFullAccess'
+        - 'arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role'
+          
       RoleName: !Sub '${ProjectName}ec2role'
   MyECSProfile:
     Type: 'AWS::IAM::InstanceProfile'
@@ -186,7 +191,7 @@ Resources:
   MyEnvironment:
     Type: 'AWS::Batch::ComputeEnvironment'
     Properties:
-      ComputeEnvironmentName: !Sub '${ProjectName}env'
+      ComputeEnvironmentName: 'cloudformenv'
       ComputeResources:
         InstanceRole: !GetAtt MyECSProfile.Arn
         InstanceTypes:
@@ -194,10 +199,10 @@ Resources:
         MaxvCpus: !Ref MaxvCpuCount
         MinvCpus: 0
         SecurityGroupIds:
-          - !GetAtt "MySecurityGroup.GroupId"
+          - 'sg-0b9a702738b99288f'
         Subnets:
-          - !Ref MySubnet1
-          - !Ref MySubnet2
+          - 'subnet-0b394d0d6448e97f1'
+          - 'subnet-08dc8c1c2a4f8bdc9'         
         Type: EC2
       Type: Managed
   MyQueue:
@@ -206,7 +211,7 @@ Resources:
       ComputeEnvironmentOrder:
         - Order: 1
           ComputeEnvironment: !Ref MyEnvironment
-      JobQueueName: !Sub '${ProjectName}Queue'
+      JobQueueName: 'cloudformqueue'
       Priority: 1
   MyJobDef:
     Type: 'AWS::Batch::JobDefinition'
@@ -215,23 +220,19 @@ Resources:
         Image: !GetAtt MyRepo.RepositoryUri
         Memory: 1000
         Vcpus: 1
-      JobDefinitionName: !Sub '${ProjectName}Def'
+      JobDefinitionName: 'cloudformjobdef'
       Type: container
   MyLambdaFunction:
     Type: 'AWS::Lambda::Function'
     Properties:
-      Handler: index.handler
-      Environment:
-        Variables:
-          USED_JOB_DEF: !Sub '${ProjectName}Def'
-          USED_JOB_NAME: !Sub '${ProjectName}Job'
-          USED_JOB_QUEUE: !Sub '${ProjectName}Queue'
+      Handler: index.lambda_handler
       Code:
         ZipFile: |
           import json
           import boto3
           import os
           import time
+          
           def lambda_handler(event, context):
               ## Get the Bucketname from which lambda was triggered
               source_bucket_name = event['Records'][0]['s3']['bucket']['name']
@@ -263,26 +264,23 @@ Resources:
               client = boto3.client('batch')
               TestrunName = endfolder+'/UserTestRun/'
               ResultName = endfolder+'/Results/'
-              TestRunURL = 's3://' + source_bucket_name + '/'+TestrunName
-              ResultURL = 's3://' + source_bucket_name + '/'+ResultName
+              TestRunURL = 's3://'+source_bucket_name+'/'+TestrunName
+              ResultURL = 's3://'+source_bucket_name+'/'+ResultName
               folder = []
               for obj in bucket.objects.filter(Prefix=TestrunName):
                   folder.append(obj.key)
               Arraysize=len(folder)
               ## print(folder)
               response = client.submit_job(
-                  actual_Def = os.environ['USED_JOB_DEF'],
-                  actual_Queue = os.environ['USED_JOB_QUEUE'],
-                  actual_name = os.environ['USED_JOB_NAME'],
-                  jobDefinition= actual_Def,
-                  jobName= actual_name,
-                  jobQueue= actual_Queue,
+                  jobDefinition= 'cloudformjobdef',
+                  jobName= 'cloudformjob',
+                  jobQueue= 'cloudformqueue',
                   arrayProperties={
                       'size': Arraysize
                   },
                   containerOverrides={
-                      ## 'vcpus': 1,
-                      ## 'memory': 1000,
+                      'vcpus': 1,
+                      'memory': 1000,
                       'environment': [
                           {
                               'name':'TESTRUN_FILE_S3_URL',
@@ -295,6 +293,7 @@ Resources:
                       ],
                   },
               )
+
       FunctionName: !Sub '${ProjectName}-lambdafunction'
       Runtime: python3.8
       Timeout: 360
@@ -309,4 +308,20 @@ Resources:
       FunctionName: !Ref MyLambdaFunction
       MaximumRetryAttempts: 0
       Qualifier: !GetAtt MyLambdaVersion.Version
+    
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    DependsOn: MyLambdaFunction
+    Properties:
+      FunctionName: !Ref MyLambdaFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${S3BucketName}'
 
+  # LambdaTrigger:
+    # Type: 'Custom::LambdaTrigger'
+    # DependsOn: LambdaInvokePermission
+    # Properties:
+      # ServiceToken: !GetAtt MyLambdaFunction.Arn
+      # LambdaArn: !GetAtt MyLambdaFunction.Arn
+      # Bucket: !Ref MyBucket
